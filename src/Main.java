@@ -1,5 +1,6 @@
 public class Main {
     public static void main(String[] args) {
-        System.out.println("Template Main");
+        String str = "Hello World! \nConcurrency Race Starts Now!!!";
+        System.out.println(str);
     }
 }
