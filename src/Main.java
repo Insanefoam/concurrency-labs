@@ -1,8 +1,9 @@
 import java.io.*;
 import java.util.*;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import java.util.stream.Collectors;
 
 public class Main {
 
@@ -10,65 +11,32 @@ public class Main {
     public static void main(String[] args) {
         ArrayList<String> classesSourceCodes = getClassesSourceCodeInFolder("./spring");
 
+        ReentrantLock reentrantLock = new ReentrantLock();
+        CountDownLatch startSignal = new CountDownLatch(1);
+        CountDownLatch doneSignal = new CountDownLatch(classesSourceCodes.size());
+        HashMap<String, String> classesHierarchy = new HashMap<>();
 
         for (String sourceCode : classesSourceCodes) {
-            Thread sourceCodeThread = new Thread(() -> {
-                //String[]: [mainClass, parentClass? = ""]
-                String[] mainAndParentClasses = getMainAndParentClassNamesFromText(sourceCode);
+            new Thread(new CodeProcessor(
+                    sourceCode,
+                    reentrantLock,
+                    classesHierarchy,
+                    doneSignal
+            )).start();
+        }
 
-                System.out.println("***************************************");
-                System.out.println("Parent class: " + mainAndParentClasses[0]);
-                System.out.println("Subclasses: " + mainAndParentClasses[1]);
-
-                try {
-                    BufferedWriter bufferedWriter = new BufferedWriter(
-                            new FileWriter("spring_classes_output.txt", true));
-
-                    try {
-                        bufferedWriter.write("***************************************");
-                        bufferedWriter.newLine();
-                        bufferedWriter.write("Parent class: " + mainAndParentClasses[0]);
-                        bufferedWriter.newLine();
-                        bufferedWriter.write("Subclasses: " + mainAndParentClasses[1]);
-                        bufferedWriter.newLine();
-                        bufferedWriter.flush();
-                    } catch (IOException e) {
-                        e.printStackTrace();
-                    }
-                } catch (IOException e) {
-                    e.printStackTrace();
-                }
+        try {
+            startSignal.countDown();
+            doneSignal.await();
+            classesHierarchy.forEach((parent, subclasses) -> {
+                System.out.println(parent + ":" + subclasses);
+                System.out.println("**********************");
             });
-            sourceCodeThread.start();
+        } catch (InterruptedException e) {
+            e.printStackTrace();
         }
     }
 
-
-    public static String[] getMainAndParentClassNamesFromText(String text) {
-        String mainClassRegex = "(?<=(private|public|protected)\\s(class|interface)\\s)\\w*";
-        String parentClassRegex = "(?<=(extends|implements)\\s)\\w*";
-
-        Pattern mainClassPattern = Pattern.compile((mainClassRegex));
-        Pattern parentClassPattern = Pattern.compile((parentClassRegex));
-
-        Matcher mainClassMatcher = mainClassPattern.matcher(text);
-        Matcher parentClassMatcher = parentClassPattern.matcher(text);
-
-        String mainClass = "";
-        String parentClass = "";
-
-        if (mainClassMatcher.find()) {
-            mainClass = text.substring(mainClassMatcher.start(),
-                    mainClassMatcher.end());
-        }
-
-        if (parentClassMatcher.find()) {
-            parentClass = text.substring(parentClassMatcher.start(),
-                    parentClassMatcher.end());
-        }
-
-        return new String[]{mainClass, parentClass};
-    }
 
     public static ArrayList<String> getClassesSourceCodeInFolder(String folder) {
         ArrayList<String> classesSourceCodes = new ArrayList<>();
@@ -98,5 +66,64 @@ public class Main {
         }
 
         return classesSourceCodes;
+    }
+}
+
+class CodeProcessor implements Runnable {
+    String sourceCode;
+    ReentrantLock reentrantLock;
+    HashMap<String, String> classesHierarchy;
+    CountDownLatch doneSignal;
+
+    CodeProcessor(String sourceCode,
+                  ReentrantLock reentrantLock,
+                  HashMap<String, String> classesHierarchy,
+                  CountDownLatch doneSignal
+    ) {
+        this.sourceCode = sourceCode;
+        this.reentrantLock = reentrantLock;
+        this.classesHierarchy = classesHierarchy;
+        this.doneSignal = doneSignal;
+    }
+
+    @Override
+    public void run() {
+        String[] mainAndParentClasses = getMainAndParentClassNamesFromText(sourceCode);
+
+        String defaultParentValue = classesHierarchy.getOrDefault(mainAndParentClasses[1],
+                "");
+        if (defaultParentValue.length() == 0) {
+            classesHierarchy.put(mainAndParentClasses[1], mainAndParentClasses[0] + " ");
+        } else {
+            classesHierarchy.put(mainAndParentClasses[1],
+                    defaultParentValue.concat(" " + mainAndParentClasses[0]));
+        }
+        doneSignal.countDown();
+    }
+
+    public static String[] getMainAndParentClassNamesFromText(String text) {
+        String mainClassRegex = "(?<=(private|public|protected)\\s(class|interface)\\s)\\w*";
+        String parentClassRegex = "(?<=(extends|implements)\\s)\\w*";
+
+        Pattern mainClassPattern = Pattern.compile((mainClassRegex));
+        Pattern parentClassPattern = Pattern.compile((parentClassRegex));
+
+        Matcher mainClassMatcher = mainClassPattern.matcher(text);
+        Matcher parentClassMatcher = parentClassPattern.matcher(text);
+
+        String mainClass = "";
+        String parentClass = "";
+
+        if (mainClassMatcher.find()) {
+            mainClass = text.substring(mainClassMatcher.start(),
+                    mainClassMatcher.end());
+        }
+
+        if (parentClassMatcher.find()) {
+            parentClass = text.substring(parentClassMatcher.start(),
+                    parentClassMatcher.end());
+        }
+
+        return new String[]{mainClass, parentClass};
     }
 }
