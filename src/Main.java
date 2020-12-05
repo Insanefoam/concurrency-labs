@@ -1,9 +1,9 @@
 import java.io.*;
 import java.util.*;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.locks.ReentrantLock;
+import java.util.concurrent.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 public class Main {
 
@@ -11,32 +11,42 @@ public class Main {
     public static void main(String[] args) {
         ArrayList<String> classesSourceCodes = getClassesSourceCodeInFolder("./spring");
 
-        ReentrantLock reentrantLock = new ReentrantLock();
-        CountDownLatch startSignal = new CountDownLatch(1);
-        CountDownLatch doneSignal = new CountDownLatch(classesSourceCodes.size());
         HashMap<String, String> classesHierarchy = new HashMap<>();
 
-        for (String sourceCode : classesSourceCodes) {
-            new Thread(new CodeProcessor(
-                    sourceCode,
-                    reentrantLock,
-                    classesHierarchy,
-                    doneSignal
-            )).start();
-        }
+        ExecutorService threads = Executors.newFixedThreadPool(100);
 
         try {
-            startSignal.countDown();
-            doneSignal.await();
-            classesHierarchy.forEach((parent, subclasses) -> {
-                System.out.println(parent + ":" + subclasses);
-                System.out.println("**********************");
+            List<Future<String[]>> futures = threads.invokeAll(classesSourceCodes
+                    .stream()
+                    .map(ProcessCodeTask::new)
+                    .collect(Collectors.toList()));
+
+            futures.forEach(future -> {
+                try {
+                    String[] mainAndParentClasses = future.get();
+                    String defaultParentValue = classesHierarchy.getOrDefault(mainAndParentClasses[1],
+                            "");
+                    if (defaultParentValue.length() == 0) {
+                        classesHierarchy.put(mainAndParentClasses[1], mainAndParentClasses[0] + " ");
+                    } else {
+                        classesHierarchy.put(mainAndParentClasses[1],
+                                defaultParentValue.concat(" " + mainAndParentClasses[0]));
+                    }
+                } catch (InterruptedException | ExecutionException e) {
+                    e.printStackTrace();
+                }
             });
         } catch (InterruptedException e) {
             e.printStackTrace();
         }
-    }
 
+        classesHierarchy.forEach((parent, subclasses) -> {
+            System.out.println("Parent class: " + parent + "\nSubclasses: " + subclasses);
+            System.out.println("**********************");
+        });
+        threads.shutdown();
+        System.out.println(Thread.activeCount());
+    }
 
     public static ArrayList<String> getClassesSourceCodeInFolder(String folder) {
         ArrayList<String> classesSourceCodes = new ArrayList<>();
@@ -69,36 +79,16 @@ public class Main {
     }
 }
 
-class CodeProcessor implements Runnable {
+class ProcessCodeTask implements Callable<String[]> {
     String sourceCode;
-    ReentrantLock reentrantLock;
-    HashMap<String, String> classesHierarchy;
-    CountDownLatch doneSignal;
 
-    CodeProcessor(String sourceCode,
-                  ReentrantLock reentrantLock,
-                  HashMap<String, String> classesHierarchy,
-                  CountDownLatch doneSignal
-    ) {
+    ProcessCodeTask(String sourceCode) {
         this.sourceCode = sourceCode;
-        this.reentrantLock = reentrantLock;
-        this.classesHierarchy = classesHierarchy;
-        this.doneSignal = doneSignal;
     }
 
     @Override
-    public void run() {
-        String[] mainAndParentClasses = getMainAndParentClassNamesFromText(sourceCode);
-
-        String defaultParentValue = classesHierarchy.getOrDefault(mainAndParentClasses[1],
-                "");
-        if (defaultParentValue.length() == 0) {
-            classesHierarchy.put(mainAndParentClasses[1], mainAndParentClasses[0] + " ");
-        } else {
-            classesHierarchy.put(mainAndParentClasses[1],
-                    defaultParentValue.concat(" " + mainAndParentClasses[0]));
-        }
-        doneSignal.countDown();
+    public String[] call() {
+        return getMainAndParentClassNamesFromText(this.sourceCode);
     }
 
     public static String[] getMainAndParentClassNamesFromText(String text) {
