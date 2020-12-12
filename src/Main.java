@@ -1,129 +1,79 @@
-import java.io.*;
+import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.*;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Function;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 public class Main {
 
+    private static Pattern pattern = Pattern.compile("(.*?)(class|interface)(.*?)(extends|implements)(\\s\\w+)(.*?)");
 
-    public static void main(String[] args) {
-        ArrayList<String> classesSourceCodes = getClassesSourceCodeInFolder("./spring");
-
-        ReentrantLock reentrantLock = new ReentrantLock();
-        CountDownLatch startSignal = new CountDownLatch(1);
-        CountDownLatch doneSignal = new CountDownLatch(classesSourceCodes.size());
-        HashMap<String, String> classesHierarchy = new HashMap<>();
-
-        for (String sourceCode : classesSourceCodes) {
-            new Thread(new CodeProcessor(
-                    sourceCode,
-                    reentrantLock,
-                    classesHierarchy,
-                    doneSignal
-            )).start();
-        }
-
-        try {
-            startSignal.countDown();
-            doneSignal.await();
-            classesHierarchy.forEach((parent, subclasses) -> {
-                System.out.println(parent + ":" + subclasses);
-                System.out.println("**********************");
-            });
-        } catch (InterruptedException e) {
-            e.printStackTrace();
-        }
-    }
+    private static Map<String, List<String>> classToHisExtended = new HashMap<>();
 
 
-    public static ArrayList<String> getClassesSourceCodeInFolder(String folder) {
-        ArrayList<String> classesSourceCodes = new ArrayList<>();
-
-        File classesFolder = new File(folder);
-        for (File file : Objects.requireNonNull(classesFolder.listFiles())) {
-            if (file.isDirectory()) {
-                String directoryPath = file.getAbsolutePath()
-                        .replace("/Users/daniil/Documents/Projects/concurrency-labs/", "");
-                classesSourceCodes.addAll(getClassesSourceCodeInFolder(directoryPath));
-            }
-
-            if (file.getName().contains(".java")) {
-                new Thread(() -> {
-                    try {
-                        Scanner scanner = new Scanner(file);
-                        String currentClassCode = "";
-                        while (scanner.hasNext()) {
-                            currentClassCode = currentClassCode.concat(scanner.nextLine());
-                        }
-                        classesSourceCodes.add(currentClassCode);
-                    } catch (FileNotFoundException e) {
-                        System.out.println("Oops, non-file object...");
+    public static void main(String[] args) throws IOException, InterruptedException {
+        List<Thread> threads =  Files.walk(Paths.get("./spring"))
+                .filter(Files::isRegularFile)
+                .map(Path::toFile)
+                .filter(file -> file.getName().endsWith(".java"))
+                .collect(Collectors.toList())
+                .stream()
+                .map(fileToMather())
+                .map(matcher -> new Thread(() -> {
+                    while(matcher.find()) {
+                        saveInMap(matcher.group(3).trim(), matcher.group(5).trim());
                     }
-                }).start();
-            }
+                }))
+                .collect(Collectors.toList());
+
+        threads.forEach(Thread::start);
+
+        for (Thread thread: threads) {
+            thread.join();
         }
 
-        return classesSourceCodes;
-    }
-}
 
-class CodeProcessor implements Runnable {
-    String sourceCode;
-    ReentrantLock reentrantLock;
-    HashMap<String, String> classesHierarchy;
-    CountDownLatch doneSignal;
-
-    CodeProcessor(String sourceCode,
-                  ReentrantLock reentrantLock,
-                  HashMap<String, String> classesHierarchy,
-                  CountDownLatch doneSignal
-    ) {
-        this.sourceCode = sourceCode;
-        this.reentrantLock = reentrantLock;
-        this.classesHierarchy = classesHierarchy;
-        this.doneSignal = doneSignal;
+        classToHisExtended
+                .entrySet()
+                .stream()
+                .filter((entry) -> entry.getValue().size() >= 1)
+                .forEach(System.out::println);
     }
 
-    @Override
-    public void run() {
-        String[] mainAndParentClasses = getMainAndParentClassNamesFromText(sourceCode);
-
-        String defaultParentValue = classesHierarchy.getOrDefault(mainAndParentClasses[1],
-                "");
-        if (defaultParentValue.length() == 0) {
-            classesHierarchy.put(mainAndParentClasses[1], mainAndParentClasses[0] + " ");
+    private synchronized static void saveInMap(String nameClass, String nameExtendsClass) {
+        if (classToHisExtended.containsKey(nameExtendsClass)) {
+            classToHisExtended.get(nameExtendsClass).add(nameClass);
         } else {
-            classesHierarchy.put(mainAndParentClasses[1],
-                    defaultParentValue.concat(" " + mainAndParentClasses[0]));
+            classToHisExtended.putIfAbsent(nameExtendsClass,
+                    new ArrayList<>(Arrays.asList(nameClass)));
         }
-        doneSignal.countDown();
     }
 
-    public static String[] getMainAndParentClassNamesFromText(String text) {
-        String mainClassRegex = "(?<=(private|public|protected)\\s(class|interface)\\s)\\w*";
-        String parentClassRegex = "(?<=(extends|implements)\\s)\\w*";
+    private static Function<File, Matcher> fileToMather() {
+        return new Function<File, Matcher>() {
+            @Override
+            public Matcher apply(File file) {
+                try {
+                    return pattern.matcher(new String(Files.readAllBytes(file.toPath())));
+                }  catch (IOException exception){
+                    return pattern.matcher("");
+                }
+            }
 
-        Pattern mainClassPattern = Pattern.compile((mainClassRegex));
-        Pattern parentClassPattern = Pattern.compile((parentClassRegex));
+            @Override
+            public <V> Function<V, Matcher> compose(Function<? super V, ? extends File> function) {
+                return null;
+            }
 
-        Matcher mainClassMatcher = mainClassPattern.matcher(text);
-        Matcher parentClassMatcher = parentClassPattern.matcher(text);
-
-        String mainClass = "";
-        String parentClass = "";
-
-        if (mainClassMatcher.find()) {
-            mainClass = text.substring(mainClassMatcher.start(),
-                    mainClassMatcher.end());
-        }
-
-        if (parentClassMatcher.find()) {
-            parentClass = text.substring(parentClassMatcher.start(),
-                    parentClassMatcher.end());
-        }
-
-        return new String[]{mainClass, parentClass};
+            @Override
+            public <V> Function<File, V> andThen(Function<? super Matcher, ? extends V> function) {
+                return null;
+            }
+        };
     }
 }
