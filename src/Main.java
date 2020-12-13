@@ -8,59 +8,66 @@ import java.util.concurrent.*;
 import java.util.function.Function;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import java.util.stream.Collectors;
 
 public class Main {
-
-    private static Pattern pattern =
-            Pattern.compile("(.*?)(class|interface)(.*?)(extends|implements)(\\s\\w+)(.*?)");
+    private static Pattern pattern = Pattern.compile("(.*?)(class|interface)(.*?)(extends|implements)(\\s\\w+)(.*?)");
 
     private static Map<String, List<String>> classToHisExtended = new HashMap<>();
 
 
-    public static void main(String[] args) throws IOException, InterruptedException {
+    public static void main(String[] args) throws Exception {
+        final int sizeQueue = 20;
 
-        int availableProcessors = Runtime.getRuntime().availableProcessors();
+        final BlockingQueue<Runnable> callableBlockingQueue =
+                new ArrayBlockingQueue<>(sizeQueue);
 
-        ExecutorService executorService = Executors.newFixedThreadPool(availableProcessors);
+        final ThreadPoolExecutor poolExecutor =
+                new ThreadPoolExecutor(
+                        4,
+                        4,
+                        10,
+                        TimeUnit.SECONDS,
+                        callableBlockingQueue);
 
-        List<Callable<ExtendsAnsClasses>> callables = Files.walk(Paths.get("./spring"))
+        poolExecutor.prestartAllCoreThreads();
+
+        Files.walk(Paths.get("./spring"))
                 .filter(Files::isRegularFile)
                 .map(Path::toFile)
                 .filter(file -> file.getName().endsWith(".java"))
-                .collect(Collectors.toList())
-                .stream()
                 .map(fileToMather())
-                .map(matcher -> (Callable<ExtendsAnsClasses>) () -> {
-                    final ExtendsAnsClasses ec = new ExtendsAnsClasses();
-                    while(matcher.find()) {
-                        ec.addPair(matcher.group(3).trim(), matcher.group(5).trim());
-                    }
-
-                    return ec;
-                })
-                .collect(Collectors.toList());
-
-        executorService
-                .invokeAll(callables)
-                .forEach(future -> {
+                .forEach(matcher -> {
                     try {
-                        final List<Pair<String, String>> pairs = future.get().getPairs();
-                        pairs.forEach(pair -> saveInMap(pair.getPairKey(), pair.getPairValue()));
-                    } catch (InterruptedException | ExecutionException e) {
+                        callableBlockingQueue.put(() -> {
+                            while (matcher.find()) {
+                                saveInMap(matcher.group(3).trim(), matcher.group(5).trim());
+                            }
+                        });
+                    } catch (InterruptedException e) {
                         e.printStackTrace();
                     }
                 });
 
 
-        executorService.shutdown();
+        Timer timer = new Timer();
 
-        classToHisExtended
-                .entrySet()
-                .stream()
-                .filter((entry) -> entry.getValue().size() >= 1)
-                .forEach(System.out::println);
+        timer.schedule(new TimerTask() {
+            @Override
+            public void run() {
+                if (callableBlockingQueue.isEmpty()) {
+                    poolExecutor.shutdown();
 
+                    classToHisExtended
+                            .entrySet()
+                            .stream()
+                            .filter((entry) -> entry.getValue().size() >= 1)
+                            .forEach(System.out::println);
+                    timer.purge();
+                    timer.cancel();
+                    System.exit(0);
+                }
+            }
+        }, 0, 3000);
 
 
     }
