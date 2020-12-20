@@ -16,47 +16,41 @@ public class Main {
 
 
     public static void main(String[] args) throws Exception {
-        final int sizeQueue = 20;
+        ExecutorService threadsService = Executors.newFixedThreadPool(4);
 
-        final BlockingQueue<Runnable> callableBlockingQueue =
-                new ArrayBlockingQueue<>(sizeQueue);
-
-        final ThreadPoolExecutor poolExecutor =
-                new ThreadPoolExecutor(
-                        4,
-                        4,
-                        10,
-                        TimeUnit.SECONDS,
-                        callableBlockingQueue);
-
-        poolExecutor.prestartAllCoreThreads();
-
+        ArrayList<File> files = new ArrayList<>();
         Files.walk(Paths.get("./spring"))
                 .filter(Files::isRegularFile)
                 .map(Path::toFile)
                 .filter(file -> file.getName().endsWith(".java"))
-                .map(fileToMather())
-                .forEach(matcher -> {
-                    try {
-                        callableBlockingQueue.put(() -> {
-                            while (matcher.find()) {
-                                saveInMap(matcher.group(3).trim(), matcher.group(5).trim());
-                            }
-                        });
-                    } catch (InterruptedException e) {
-                        e.printStackTrace();
-                    }
-                });
+                .forEach(files::add);
 
+        final int sizeQueue = files.size();
+        final BlockingQueue<File> tasks = new ArrayBlockingQueue<>(sizeQueue);
+        final BlockingQueue<Pair<String, String>> results = new ArrayBlockingQueue<>(sizeQueue);
+
+
+        int tasksCount = files.size();
+        for (int i = 0; i < tasksCount; i++) {
+            threadsService.execute(new ClassAnalyzerThread(tasks, results));
+        }
+
+        files.forEach((file) -> {
+            try {
+                tasks.put(file);
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+        });
 
         Timer timer = new Timer();
-
         timer.schedule(new TimerTask() {
             @Override
             public void run() {
-                if (callableBlockingQueue.isEmpty()) {
-                    poolExecutor.shutdown();
+                if (tasks.size() == 0) {
+                    threadsService.shutdown();
 
+                    results.forEach((pair) -> saveInMap(pair.getPairKey(), pair.getPairValue()));
                     classToHisExtended
                             .entrySet()
                             .stream()
@@ -67,17 +61,42 @@ public class Main {
                     System.exit(0);
                 }
             }
-        }, 0, 3000);
-
-
+        }, 100, 5000);
     }
 
-    private synchronized static void saveInMap(String nameClass, String nameExtendsClass) {
+    private static void saveInMap(String nameClass, String nameExtendsClass) {
         if (classToHisExtended.containsKey(nameExtendsClass)) {
             classToHisExtended.get(nameExtendsClass).add(nameClass);
         } else {
             classToHisExtended.putIfAbsent(nameExtendsClass,
                     new ArrayList<>(Arrays.asList(nameClass)));
+        }
+    }
+
+    private static class ClassAnalyzerThread implements Runnable {
+        private BlockingQueue<File> tasks;
+        private BlockingQueue<Pair<String, String>> results;
+
+        public ClassAnalyzerThread(BlockingQueue<File> tasks, BlockingQueue<Pair<String, String>> results) {
+            this.tasks = tasks;
+            this.results = results;
+        }
+
+        @Override
+        public void run() {
+            try {
+                File file = tasks.take();
+//                System.out.println("Tasks queue size: " + tasks.size());
+//                System.out.println("Run task for file: " + file.getName());
+                Matcher matcher = fileToMather().apply(file);
+                while (matcher.find()) {
+                    String child = matcher.group(3).trim();
+                    String parent = matcher.group(5).trim();
+                    results.put(new Pair<>(child, parent));
+                }
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
         }
     }
 
@@ -87,7 +106,7 @@ public class Main {
             public Matcher apply(File file) {
                 try {
                     return pattern.matcher(new String(Files.readAllBytes(file.toPath())));
-                }  catch (IOException exception){
+                } catch (IOException exception) {
                     return pattern.matcher("");
                 }
             }
