@@ -65,7 +65,7 @@ public class Main {
 
     }
 
-    private synchronized static void saveInMap(String nameClass, String nameExtendsClass) {
+    private static void saveInMap(String nameClass, String nameExtendsClass) {
         if (classToHisExtended.containsKey(nameExtendsClass)) {
             classToHisExtended.get(nameExtendsClass).add(nameClass);
         } else {
